@@ -1,0 +1,91 @@
+#!/bin/sh
+set -eu
+
+cd /~arcowo || exit # better go to hardcoded home because of 'sudo HOME-disallowed -rm' will use /root
+
+allowed_read=$0.allowlist
+
+case $# in
+	0) r=cat; [ -t 1 ] && r=ll;;
+	*) r=${1:-}; shift;;
+esac
+
+case $r in
+	help|--help|-h)
+		printf %s\\n \
+			"Usage:   ${0##*/} [ll|ls|test-|rm|rm-f|rg|grep|cat] [...args]" \
+			"         ${0##*/} <rg|grep>[,test-],<rm|rm-rf|ll|ls> [arg1] [...args]" \
+			"   TODO: ${0##*/} , <command> [...args] , <command> [...args] [, ...]" \
+			"         ${0##*/} edit" \
+			"" \
+			"Commands: " \
+			"  edit       edit allowlist" \
+			"  rg|grep    pipes to '\$1 \$@'" \
+			"  cat        just prints not allowed files" \
+			"  test-      pipes to 'test- \$@ -- DISALLOWED_FILES'"\
+			"  ll|ls      calls '\$1 \$@ -- DISALLOWED_FILES', the default when no args"\
+			"  rm         calls 'rm \${@:-\"-riv\"} -- DISALLOWED_FILES'" \
+			"  rm-f       calls 'rm -rfv \$@ -- DISALLOWED_FILES'" \
+			"  help       prints this help message and exits" \
+			"  ,          start multiple piped command separated by ',' argument" \
+			"" \
+			"todo-rm:" \
+			"when includes ',' in argument, for example:" \
+			" ${0##*/} 'rg,ll' will pipe to 'rg \$1 | xargs ll \$@'" \
+			"" \
+			"   Print/remove/grep not allowed files in your homedir" \
+			"   And print curent staus of directoryes + files" \
+		;
+		exit
+	;;
+	edit) set -f; exec ${EDITOR:-vi} "$@" "$allowed_read"; exit;;
+esac
+
+[ -f "$allowed_read" ] || {
+	printf %s\\n "${0##*/}: File to read allowed files list does not exist"
+	exit 1
+}
+
+
+len_existing() { if [ -e "$1" ]; then echo $#; else echo 0; fi; }
+printf_existing_files() { if [ -e "$1" ]; then printf %s\\n "$@"; fi; }
+
+{ pwd; echo; } >&2
+
+{
+	printf_existing_files .[!.]*
+	printf_existing_files *
+} | {
+	grep -vxFf "$allowed_read"
+} | ( 
+	# TODO: recursion where $1 is kept within ${1#*,}, $2 is shifted, and the rest is kept, untill there is no ',' in $1
+	# but what abuot the quotes ...
+	# maybe use HOME-disallowed , rg '--color=never' '^\.' , ls -a -l ,
+	set -f
+	case $r in
+		grep,*|rg,*) "${r%%","*}" ${1:?};;
+		*) cat;;
+	esac
+) | (
+	set -f
+	case $r in 
+		test-,*) test- ${1:?};;
+		*,test-,*) test- ${2:?};;
+		*) cat;;
+	esac
+) | {
+	case $r in *,*,*) shift 2;; *,*) shift; esac
+	case $r in
+		cat|*,cat) cat;;
+		rg|grep) "$r" "$@";;
+		test-) test- "$@";;
+		ll|ls|*,ll|*,ls) xargs    -d \\n -r "${r##*","}" -d "$@" --;;
+		rm|*,rm)         xargs -o -d \\n -r rm "${@:-"-riv"}" --;;
+		rm-f|*,rm-f)     xargs -o -d \\n -r rm -rfv "$@" --;;
+		
+	esac
+}
+
+total=$(( $(len_existing * ) + $(len_existing .[!.]* ) ))
+dirs=$((  $(len_existing */) + $(len_existing .[!.]*/) ))
+printf >&2 %s\\n '' "$dirs dirs + $(( total - dirs )) files = $total"
