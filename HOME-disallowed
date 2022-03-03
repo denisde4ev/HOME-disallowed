@@ -6,34 +6,36 @@ cd /~arcowo || exit # better go to hardcoded home because of 'sudo HOME-disallow
 allowed_read=$0.allowlist
 
 from_stdin=0
-case $# in
-	0) r=cat; [ -t 1 ] && r=ll;;
-	*)
-		case $1 in
-			-) from_stdin=1; r=${2:?"use --help for usage"}; shift 2;;
-			*) r=$1; shift;;
-		esac
-	;;
+case ${1-} in
+	-) from_stdin=1; r=${2-cat}; shift;;
+	edit|"${EDITOR-:edit}") set -f; shift; exec ${EDITOR:-vi} "$@" "$allowed_read"; exit;;
+esac
+case ${1-} in
+	'') r=cat; [ -t 1 ] && r=ll;;
+	# rm-*) r='rm'; rmarg="-f";;
+	ll|ls|rm) r=${1-}; shift;;
+	*) echo 'use --help for usage' >&2; exit 2;;
 esac
 
-bars=1
-case ${from_stdin:-x}:$r in
-	1:*|?:cat) bars=0
-esac
+echo r=$r 
+arg "$@" from_stdin=$from_stdin
 
+case $from_stdin:${1-} in
+	1:*|?:cat) bars=0;;
+	*) bars=1;;
+esac
 
 case $r in
 	help|--help)
 		printf %s\\n \
-			"Usage:   ${0##*/} [-] [ll|ls|rm|rm-f|cat] [...args]" \
-			"         ${0##*/} edit" \
+			"Usage: ${0##*/} [-] [ll|ls|rm|rm-f|cat] [...args]" \
+			"       ${0##*/} edit [...editor args]" \
 			"" \
-			"Commands:" \
 			"  -          read from stdin files to rm/ls from homedir" \
 			"  ll|ls      calls '\$1 \$@ -- DISALLOWED_FILES', the default when no args" \
 			"  rm         calls 'rm \${@:-\"-riv\"} -- DISALLOWED_FILES'" \
 			"  rm-f       calls 'rm -rfv \$@ -- DISALLOWED_FILES'" \
-			"  cat        just prints not allowed files" \
+			"  cat        just prints disallowed files" \
 			"  edit       edit allowlist" \
 			"  [--]help   prints usage and exit" \
 			"" \
@@ -42,8 +44,10 @@ case $r in
 		;
 		exit
 	;;
-	edit) set -f; exec ${EDITOR:-vi} "$@" "$allowed_read"; exit;;
 esac
+
+
+
 
 [ -f "$allowed_read" ] || {
 	printf %s\\n "${0##*/}: File to read allowed files list does not exist, use '${0##*/} edit' and save to csreate it"
@@ -72,7 +76,6 @@ esac | case $r in
 	ll|ls) xargs    -d \\n -r "${r##*","}" -d "$@" --;;
 	rm)    xargs -o -d \\n -r rm "${@:-"-riv"}" --;;
 	rm-f)  xargs -o -d \\n -r rm -rfv "$@" --;;
-	*) echo 'use --help for usage' >&2; exit 2;;
 esac
 
 
