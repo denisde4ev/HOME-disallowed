@@ -1,88 +1,139 @@
 #!/bin/sh
 set -eu
 
-cd /~arcowo || exit # better go to hardcoded home because of 'sudo HOME-disallowed -rm' will use /root
 
-allowed_read=$0.allowlist
 
-from_stdin=0
-case ${1-} in
-	-) from_stdin=1; r=${2-cat}; shift;;
-	edit|"${EDITOR-:edit}") set -f; shift; exec ${EDITOR:-vi} "$@" "$allowed_read"; exit;;
+unset from_stdin homepath arg_edit allowed_read
+
+while case $# in 0) false; esac; do
+	case $1 in
+		--) shift; break;;
+
+		help|--help)
+			printf %s\\n \
+				"Usage: ${0##*/} --homepath <PATH> [--allowed-filter FILTER_FILE] [-] [ll|ls|rm|cat] [...args]" \
+				"       ${0##*/} <edit|--edit> [...editor args]" \
+				"options:" \
+				"  -           read from stdin files to rm/ls from homedir" \
+				"  ll|ls       calls '\$1 \$@ -- DISALLOWED_FILES', (default)" \
+				"  rm          calls 'rm \${@:-\"-riv\"} -- DISALLOWED_FILES'" \
+				"  cat         just prints disallowed files, (default if stdout is not tty)" \
+				"  edit        edit allowlist" \
+				"  [--]help    prints usage and exit" \
+				"" \
+				"Print/remove not allowed files in your homedir" \
+				"And print curent staus of directoryes + files" \
+			;
+			exit
+		;;
+		# -x) set -x; shift;;
+		--edit|edit) arg_edit='';;
+		-) from_stdin='';;
+
+		# options requiring argument:
+		--homepath)   homepath=$2; shift;;
+		--homepath=*) homepath=${1#*=};;
+		--allowed-filter)   allowed_read=$2; shift;;
+		--allowed-filter=*) allowed_read=${1#*=};;
+
+		ll|ls|rm|cat) action=$1; shift; break;;
+
+		*) echo 'use --help for usage' >&2; exit 2;;
+	esac
+	shift
+done
+
+
+: ${allowed_read=$0.allowlist}
+
+
+case ${arg_edit+x} in x)
+	set -f
+	exec ${EDITOR:-vi} "$@" "$allowed_read"
+	exit
 esac
-case ${1-} in
-	'') r=cat; [ -t 1 ] && r=ll;;
-	# rm-*) r='rm'; rmarg="-f";;
-	ll|ls|rm) r=${1-}; shift;;
-	*) echo 'use --help for usage' >&2; exit 2;;
+
+
+: ${homepath?"missing on empty --homepath option"}
+# dont: dont fallback to $HOME or ~
+# reason:
+#   user may want to remove write protected files from its own dir,
+#   resulting in `sudo HOME-disallowed rm -rf`
+#   and if no '--homepath' option spacifyed, then fallback $HOME -> /root
+#   then will remove files from /root folder
+# easy fix will be to detect if
+
+cd "$homepath" || exit
+
+
+case ${action-x} in x)
+	if [ -t 1 ]; then
+		action=ll
+	else
+		action=cat
+	fi
 esac
 
-echo r=$r 
-arg "$@" from_stdin=$from_stdin
-
-case $from_stdin:${1-} in
-	1:*|?:cat) bars=0;;
-	*) bars=1;;
+case ${from_stdin+stdin}:$action in
+	stdin:*|?:cat) unset print_total;;
+	*) print_total='';;
 esac
-
-case $r in
-	help|--help)
-		printf %s\\n \
-			"Usage: ${0##*/} [-] [ll|ls|rm|rm-f|cat] [...args]" \
-			"       ${0##*/} edit [...editor args]" \
-			"" \
-			"  -          read from stdin files to rm/ls from homedir" \
-			"  ll|ls      calls '\$1 \$@ -- DISALLOWED_FILES', the default when no args" \
-			"  rm         calls 'rm \${@:-\"-riv\"} -- DISALLOWED_FILES'" \
-			"  rm-f       calls 'rm -rfv \$@ -- DISALLOWED_FILES'" \
-			"  cat        just prints disallowed files" \
-			"  edit       edit allowlist" \
-			"  [--]help   prints usage and exit" \
-			"" \
-			"   Print/remove not allowed files in your homedir" \
-			"   And print curent staus of directoryes + files" \
-		;
-		exit
-	;;
-esac
-
-
 
 
 [ -f "$allowed_read" ] || {
-	printf %s\\n "${0##*/}: File to read allowed files list does not exist, use '${0##*/} edit' and save to csreate it"
+	printf %s\\n >&2
+		"File allowed filter does not exist," \
+		"use '${0##*/} edit' and save to create it" \
+	;
 	exit 1
 }
 
 
-printf_existing_files() { if [ -e "$1" ]; then printf %s\\n "$@"; fi; }
+
+{
+	case ${from_stdin+stdin} in
+	stdin)
+		cat
+		;;
+	*)
+		printf_existing_files() {
+			if [ -e "$1" ]; then
+				printf %s\\n "$@"
+			fi
+		}
 
 
-[ "$bars" -eq 1 ] && { pwd; echo; } >&2
-
-
-case $from_stdin in
-	1) cat;;
-	0)
 		{
 			printf_existing_files .[!.]*
 			printf_existing_files *
 		} | {
 			grep -vxFf "$allowed_read"
 		}
-	;;
-esac | case $r in
-	cat) cat;;
-	ll|ls) xargs    -d \\n -r "${r##*","}" -d "$@" --;;
-	rm)    xargs -o -d \\n -r rm "${@:-"-riv"}" --;;
-	rm-f)  xargs -o -d \\n -r rm -rfv "$@" --;;
-esac
+		;;
+	esac
+} | {
+	case $action in
+		cat) cat;;
+		ll|ls) xargs    -d \\n -r "${action##*","}" -d "$@" --;;
+		rm)    xargs -o -d \\n -r rm "${@:-"-riv"}" --;;
+	esac
+}
 
 
-[ "$bars" -eq 1 ] || exit 0
 
-len_existing() { if [ -e "$1" ]; then echo $#; else echo 0; fi; }
+${print_total-exit 0}
 
-total=$(( $(len_existing * ) + $(len_existing .[!.]* ) ))
-dirs=$((  $(len_existing */) + $(len_existing .[!.]*/) ))
-printf >&2 %s\\n '' "$dirs dirs + $(( total - dirs )) files = $total"
+len_existing() {
+	if [ -e "$1" ]; then
+		echo $#
+	else
+		echo 0
+	fi
+}
+
+total=$((  $(len_existing * )  +  $(len_existing .[!.]* )  ))
+dirs=$((   $(len_existing */)  +  $(len_existing .[!.]*/)  ))
+printf %s\\n >&2 \
+	'' \
+	"$dirs dirs + $(( total - dirs )) files = $total" \
+;
